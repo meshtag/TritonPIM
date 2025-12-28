@@ -1,0 +1,8 @@
+[submodule "third_party/triton"]
+	path = third_party/triton
+	url = https://github.com/meshtag/triton
+	branch = prathamesh_triton_pim
+[submodule "third_party/upmem_llvm/llvm-project"]
+	path = third_party/upmem_llvm/llvm-project
+	url = https://github.com/meshtag/llvm-project
+	branch = prathamesh_triton_pim
