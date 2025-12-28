@@ -11,7 +11,7 @@ The goal is to be able to run on the UPMEM simulator from a clean checkout.
 - `dpu/vec_add.mlir`: DPU dialect version of the vector add kernel.
 - `dpu/vec_add_args.c`: defines `DPU_INPUT_ARGUMENTS` in the host section.
 - `host/vec_add_host.c`: host runner for the DPU dialect flow.
-- `third_party/triton/python/triton/backends/dpu/dpu_min_test.py`: Triton kernel, now `C = A + B`.
+- `dpu_min_test.py`: Triton kernel, now `C = A + B`.
 - `dpu/triton_wrapper.ll`: auto-generated DPU entrypoint (`main`) that calls `add_kernel`.
 - `dpu/triton_args.h` / `dpu/triton_args.c`: auto-generated DPU args struct + definition.
 - `host/triton_args.h`: auto-generated host args struct.
@@ -77,7 +77,7 @@ export TRITON_SRC=/path/to/triton
 export UPMEM_OPT=/path/to/upmem_llvm/llvm-project/build/bin/opt
 export TRITON_PY=/path/to/venv/bin/python
 
-$TRITON_PY $TRITON_SRC/python/triton/backends/dpu/dpu_min_test.py --out bin/triton_add.ll
+$TRITON_PY ./dpu_min_test.py --out bin/triton_add.ll
 $TRITON_PY scripts/generate_triton_wrapper.py \
   --ir bin/triton_add.ll \
   --out dpu/triton_wrapper.ll \
@@ -228,6 +228,15 @@ Notes:
   - args 4/5: internal `addrspace(1)` pointers (ignored)
 - You can supply your own Triton script with `--triton-script <file>`. The script
   must accept `--out <path>` and write the LLVM IR there.
+- Default Triton script: `./dpu_min_test.py` if present, otherwise
+  `$TRITON_SRC/python/triton/backends/dpu/dpu_min_test.py`.
+- To set a default DPU count from the Triton script, you can use any of:
+  - a kernel launch keyword: `kernel[grid](..., num_dpus=4)`
+  - a `triton.Config(..., num_dpus=4)` inside `@triton.autotune`
+  - a top-level literal: `TRITON_DPU_NUM_DPUS = 4`
+  The generated host runner uses the first found in that order, unless
+  `--nr-dpus` is passed at runtime.
+  (Example: `dpu_min_test.py` sets `TRITON_DPU_NUM_DPUS = 4`.)
 - Environment overrides: `TRITON_PY`, `TRITON_SRC`, `UPMEM_OPT`, `TRITON_CACHE_DIR`.
 
 Artifact contents:
@@ -248,7 +257,8 @@ ARTIFACT_DIR=/mnt/host_cwd/artifacts/add ./scripts/container_artifact_run.sh \
 `--arg 3=10` sets scalar kernel argument index 3 (the `N` length) to 10.
 
 Optional overrides:
-- `--nr-dpus N` to request multiple DPUs (inputs are sharded by default).
+- `--nr-dpus N` to request multiple DPUs (inputs are sharded by default; this
+  overrides any `num_dpus` default from the Triton script).
 - `--len IDX=N` to set element counts per pointer arg (default uses the single
   scalar arg if present, e.g. arg 3 for `n`).
 - `--in IDX=PATH` to provide raw input data for a pointer arg.

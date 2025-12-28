@@ -22,7 +22,12 @@ export TRITON_CACHE_DIR
 unset TRITON_DPU_SKIP_LEGALIZE
 export TRITON_DPU_FORCE_LEGALIZE=1
 
-"${TRITON_PY}" "${TRITON_SRC}/python/triton/backends/dpu/dpu_min_test.py" --out "${OUT_LL}"
+TRITON_MIN_TEST="${ROOT_DIR}/dpu_min_test.py"
+if [[ ! -f "${TRITON_MIN_TEST}" ]]; then
+  TRITON_MIN_TEST="${TRITON_SRC}/python/triton/backends/dpu/dpu_min_test.py"
+fi
+
+"${TRITON_PY}" "${TRITON_MIN_TEST}" --out "${OUT_LL}"
 "${TRITON_PY}" "${ROOT_DIR}/scripts/generate_triton_wrapper.py" \
   --ir "${OUT_LL}" \
   --out "${ROOT_DIR}/dpu/triton_wrapper.ll" \

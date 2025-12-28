@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import argparse
+import ast
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -92,6 +94,136 @@ def parse_out_indices(text: str) -> list[int]:
             continue
         out.append(int(item))
     return out
+
+
+def parse_num_dpus_value(text: str, name: str = "TRITON_DPU_NUM_DPUS") -> int:
+    clean = text.replace("_", "").strip()
+    if not clean.isdigit():
+        raise ValueError(f"{name} must be a positive integer")
+    val = int(clean, 10)
+    if val <= 0:
+        raise ValueError(f"{name} must be > 0")
+    if val > 0xFFFFFFFF:
+        raise ValueError(f"{name} must fit in uint32_t")
+    return val
+
+
+def collect_literal_ints(tree: ast.AST) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for node in getattr(tree, "body", []):
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+            value = node.value
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+            value = node.value
+        else:
+            continue
+        if value is None:
+            continue
+        try:
+            literal = ast.literal_eval(value)
+        except (ValueError, SyntaxError):
+            continue
+        if isinstance(literal, bool) or not isinstance(literal, int):
+            continue
+        for target in targets:
+            if isinstance(target, ast.Name):
+                out[target.id] = literal
+    return out
+
+
+def extract_int_literal(node: ast.AST, consts: dict[str, int], name: str) -> int:
+    if isinstance(node, ast.Name) and node.id in consts:
+        return consts[node.id]
+    try:
+        literal = ast.literal_eval(node)
+    except (ValueError, SyntaxError):
+        raise ValueError(f"{name} must be a literal integer") from None
+    if isinstance(literal, bool) or not isinstance(literal, int):
+        raise ValueError(f"{name} must be a literal integer")
+    return literal
+
+
+def is_config_call(node: ast.Call) -> bool:
+    func = node.func
+    if isinstance(func, ast.Name) and func.id == "Config":
+        return True
+    if isinstance(func, ast.Attribute) and func.attr == "Config":
+        return True
+    return False
+
+
+def is_kernel_launch_call(node: ast.Call) -> bool:
+    func = node.func
+    if isinstance(func, ast.Subscript):
+        return True
+    if isinstance(func, ast.Attribute) and func.attr in ("run", "warmup"):
+        return True
+    return False
+
+
+def extract_num_dpus_kw(keywords: list[ast.keyword], consts: dict[str, int]) -> int | None:
+    for kw in keywords:
+        if kw.arg == "num_dpus":
+            literal = extract_int_literal(kw.value, consts, "num_dpus")
+            return parse_num_dpus_value(str(literal), name="num_dpus")
+    return None
+
+
+def select_unique(values: list[int], name: str) -> int | None:
+    if not values:
+        return None
+    uniq = sorted(set(values))
+    if len(uniq) > 1:
+        raise ValueError(f"multiple {name} values found: {', '.join(str(v) for v in uniq)}")
+    return uniq[0]
+
+
+def parse_triton_num_dpus(script_path: Path) -> int | None:
+    if not script_path.exists():
+        return None
+    try:
+        text = script_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        tree = ast.parse(text, filename=str(script_path))
+    except SyntaxError:
+        for line in text.splitlines():
+            match = re.match(r"^\s*TRITON_DPU_NUM_DPUS\s*=\s*([0-9_]+)\s*(?:#.*)?$", line)
+            if match:
+                return parse_num_dpus_value(match.group(1), name="TRITON_DPU_NUM_DPUS")
+        return None
+
+    consts = collect_literal_ints(tree)
+    launch_vals: list[int] = []
+    config_vals: list[int] = []
+
+    class Visitor(ast.NodeVisitor):
+        def visit_Call(self, node: ast.Call) -> None:
+            if is_kernel_launch_call(node):
+                val = extract_num_dpus_kw(node.keywords, consts)
+                if val is not None:
+                    launch_vals.append(val)
+            elif is_config_call(node):
+                val = extract_num_dpus_kw(node.keywords, consts)
+                if val is not None:
+                    config_vals.append(val)
+            self.generic_visit(node)
+
+    Visitor().visit(tree)
+
+    picked = select_unique(launch_vals, "num_dpus launch")
+    if picked is not None:
+        return picked
+    picked = select_unique(config_vals, "num_dpus config")
+    if picked is not None:
+        return picked
+
+    if "TRITON_DPU_NUM_DPUS" in consts:
+        return parse_num_dpus_value(str(consts["TRITON_DPU_NUM_DPUS"]), name="TRITON_DPU_NUM_DPUS")
+    return None
 
 
 def load_kernel_signature(ir_path: Path, kernel_name: str):
@@ -199,7 +331,11 @@ def generate_host_runner(meta: dict, out_path: Path) -> None:
     lines.append("  uint8_t len_set[ARG_COUNT] = {0};")
     lines.append("  const char *in_paths[ARG_COUNT] = {0};")
     lines.append("  const char *out_paths[ARG_COUNT] = {0};")
-    lines.append("  uint32_t nr_requested = NR_DPUS;")
+    default_num_dpus = meta.get("num_dpus")
+    if default_num_dpus is None:
+        lines.append("  uint32_t nr_requested = NR_DPUS;")
+    else:
+        lines.append(f"  uint32_t nr_requested = {int(default_num_dpus)}u;")
     lines.append("")
     lines.append("  for (int i = 1; i < argc; i++) {")
     lines.append("    if (strcmp(argv[i], \"--help\") == 0) {")
@@ -467,7 +603,13 @@ def main() -> None:
     artifact_dir = Path(args.artifact_dir).resolve()
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
-    triton_script = Path(args.triton_script) if args.triton_script else Path(args.triton_src) / "python/triton/backends/dpu/dpu_min_test.py"
+    if args.triton_script:
+        triton_script = Path(args.triton_script)
+    else:
+        triton_script = ROOT_DIR / "dpu_min_test.py"
+        if not triton_script.exists():
+            triton_script = Path(args.triton_src) / "python/triton/backends/dpu/dpu_min_test.py"
+    num_dpus = parse_triton_num_dpus(triton_script)
     kernel_ll = artifact_dir / "kernel.ll"
     wrapper_ll = artifact_dir / "wrapper.ll"
     dpu_args_h = artifact_dir / "triton_args.h"
@@ -572,6 +714,8 @@ def main() -> None:
         "passed_args": passed_args,
         "out_indices": out_indices,
     }
+    if num_dpus is not None:
+        meta["num_dpus"] = num_dpus
     meta_path.write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
     input_ptrs = [a for a in passed_args if a["kind"] == "ptr" and not a["is_output"]]
