@@ -40,6 +40,33 @@ Container:
 - UPMEM SDK installed (provides `dpu-upmem-dpurte-clang`, `dpu-pkg-config`)
 - Repo root mounted at `/mnt/host_cwd`
 
+## Required third_party branches (build these first)
+These flows rely on DPU-specific patches. Using upstream Triton/LLVM will not
+work. Use the provided branches under `third_party/`:
+
+- Triton: `third_party/triton` on branch `prathamesh_triton_pim`
+  - Build it locally:
+    ```
+    cd third_party/triton
+    # optional venv
+    python -m venv .venv
+    source .venv/bin/activate
+    pip install -r python/requirements.txt
+    TRITON_BUILD_WITH_CLANG_LLD=true pip install -e . --no-build-isolation
+    ```
+  - Then set `TRITON_SRC` and (if using a venv) `TRITON_PY`.
+
+- UPMEM LLVM: `third_party/upmem_llvm/llvm-project` (branch `main`)
+  - Build `opt`/`mlir-opt` with the `dpu-legalize` pass:
+    ```
+    cd third_party/upmem_llvm/llvm-project
+    cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLVM_ENABLE_ASSERTIONS=ON \
+      -DLLVM_ENABLE_PROJECTS="mlir;llvm;lld" -DLLVM_TARGETS_TO_BUILD="host" \
+      -B build llvm
+    ninja -C build opt mlir-opt mlir-translate
+    ```
+  - Then set `UPMEM_OPT=third_party/upmem_llvm/llvm-project/build/bin/opt`.
+
 ## Quickstart (env exports, no symlinks)
 From repo root:
 ```
