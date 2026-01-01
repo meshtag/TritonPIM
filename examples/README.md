@@ -1,7 +1,8 @@
 # Examples
 
 This directory contains Triton-based examples that compile to LLVM IR for the
-UPMEM DPU flow in this repo.
+UPMEM DPU flow in this repo. They are successfully run and tested on the UPMEM
+simulator for functional execution.
 
 ## Required third_party branches (build these first)
 These examples depend on DPU-specific patches. Use the branches already vendored
@@ -18,7 +19,7 @@ under `third_party/`:
   ```
   Then set `TRITON_SRC` and (if using a venv) `TRITON_PY`.
 
-- UPMEM LLVM: `third_party/upmem_llvm/llvm-project` (branch `main`)
+- UPMEM LLVM: `third_party/upmem_llvm/llvm-project` (branch `prathamesh_triton_pim`)
   Build `opt`/`mlir-opt` with the `dpu-legalize` pass:
   ```
   cd third_party/upmem_llvm/llvm-project

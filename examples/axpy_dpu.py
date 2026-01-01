@@ -24,6 +24,7 @@ def axpy_kernel(X, Y, A, N, BLOCK: tl.constexpr):
     tl.store(Y + offs, out, mask)
 
 
+# Create a binder so tooling can inspect the kernel signature without launching it.
 axpy_kernel.create_binder()
 
 # Signature for the DPU backend: pointers in MRAM + scalar args.
